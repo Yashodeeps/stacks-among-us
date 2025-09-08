@@ -16,9 +16,10 @@ interface Agent {
 interface TransferParams {
   fromPrivateKey: string;
   toAddress: string;
-  amount: string;
+  amount: string; // Amount in STX (e.g., "0.1")
   network: "testnet";
   memo?: string;
+  fromAddress: string;
 }
 
 interface TransferResult {
@@ -68,6 +69,15 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 export async function transferSTX(
   params: TransferParams
 ): Promise<TransferResult> {
+  // Validate amount client-side
+  const amountNum = parseFloat(params.amount);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    return {
+      success: false,
+      error: "Invalid amount: must be a positive number",
+    };
+  }
+  console.log("transferSTX params", params);
   const response = await fetch("/api/transfer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

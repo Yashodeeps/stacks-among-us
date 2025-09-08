@@ -110,9 +110,11 @@ const AmongUsGame: React.FC = () => {
   const [userBalance, setUserBalance] = useState<number | null>(null);
   const [gameProgress, setGameProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [isGameRunning, setIsGameRunning] = useState<boolean>(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const gameRunningRef = useRef<boolean>(false);
 
-  // Game-controlled testnet address (replace with your actual testnet address)
+  // Game-controlled testnet address
   const gameAddress =
     process.env.NEXT_PUBLIC_GAME_ADDRESS ||
     "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM";
@@ -173,27 +175,32 @@ const AmongUsGame: React.FC = () => {
     }
 
     setError(null);
+    setIsGameRunning(true);
 
     // Transfer bet amount to game address
     try {
+      console.log("Transferring bet...");
       const transferResult = await transferSTX({
         fromPrivateKey: userPrivateKey,
         toAddress: gameAddress,
+        fromAddress: userAddress,
         amount: betAmount.toString(),
         network: "testnet",
       });
       if (!transferResult.success) {
         setError(transferResult.error || "Failed to transfer bet");
+        setIsGameRunning(false);
         return;
       }
       addToLog(
         "transaction",
-        `Transferred ${betAmount} STX to game address ${gameAddress}`
+        `Transferred ${betAmount} STX to game address ${gameAddress} (TxID: ${transferResult.txId})`
       );
       setUserBalance((prev) => (prev !== null ? prev - betAmount : prev));
     } catch (err) {
       console.error("Transfer failed:", err);
-      setError("Failed to transfer bet");
+      setError("Failed to transfer bet: " + err.message);
+      setIsGameRunning(false);
       return;
     }
 
@@ -201,33 +208,104 @@ const AmongUsGame: React.FC = () => {
     const initializedAgents = initializeAgents(agentCount);
 
     try {
-      for (let agent of initializedAgents) {
+      console.log("Initializing agents...");
+      for (let i = 0; i < initializedAgents.length; i++) {
+        const agent = initializedAgents[i];
+        console.log(`Initializing ${agent.name}...`);
+
         const config: AgentConfig = {
           network: "testnet",
           enableConversational: true,
-          personalityPrompt: agent.personality,
+          // KEY CHANGE: More explicit personality prompts for Among Us
+          personalityPrompt: `You are ${agent.name} playing Among Us. ${agent.personality}
+        
+IMPORTANT: You are NOT a blockchain assistant. You are playing a social deduction game.
+- Make observations about other players
+- Share suspicions naturally 
+- Defend yourself when accused
+- Vote based on behavior and evidence
+- Stay in character at all times
+- Engage in the social aspects of the game
+
+Respond as your character would in Among Us discussions, voting phases, and social interactions.`,
           name: agent.name,
+          openAiApiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
         };
-        agent.agent = await createAgent(config);
-        await agent.agent.init();
+
+        try {
+          agent.agent = await createAgent(config);
+          await agent.agent.init();
+
+          // IMPORTANT: Set the agent to Among Us mode
+          if (agent.agent.setGameMode) {
+            agent.agent.setGameMode("amongus");
+          }
+
+          console.log(
+            `✅ ${agent.name} initialized successfully in Among Us mode`
+          );
+        } catch (agentError) {
+          console.error(`❌ Failed to initialize ${agent.name}:`, agentError);
+          // Create a mock agent for testing if initialization fails
+          agent.agent = {
+            init: async () => {},
+            simpleChat: async (prompt: string) => {
+              // Better mock responses for Among Us context
+              const amongUsResponses = [
+                "I've been watching everyone carefully, and I have some concerns...",
+                "That's exactly what an impostor would say!",
+                "I was doing tasks in electrical when the lights went out.",
+                "Something about their behavior seems off to me.",
+                "I think we need to be more strategic about this vote.",
+                "I trust my instincts on this one.",
+                "Wait, let me think about what I observed...",
+              ];
+              return amongUsResponses[
+                Math.floor(Math.random() * amongUsResponses.length)
+              ];
+            },
+          };
+        }
       }
+
+      console.log("All agents initialized for Among Us");
     } catch (err) {
       console.error("Failed to initialize agents:", err);
-      setError("Failed to initialize agents. Please try again.");
-      return;
+      setError("Failed to initialize agents. Using mock agents for demo.");
+
+      // Create mock agents for demo purposes with Among Us context
+      for (let agent of initializedAgents) {
+        if (!agent.agent) {
+          agent.agent = {
+            init: async () => {},
+            simpleChat: async (prompt: string) => {
+              const responses = [
+                `${agent.name}: I've been keeping track of everyone's movements...`,
+                `${agent.name}: Something doesn't feel right about this situation.`,
+                `${agent.name}: Based on what I've seen, I have my suspicions.`,
+                `${agent.name}: We need to vote carefully here.`,
+                `${agent.name}: I was with someone else when that happened.`,
+              ];
+              return responses[Math.floor(Math.random() * responses.length)];
+            },
+          };
+        }
+      }
     }
 
     setAgents(initializedAgents);
     setGameState("selectImpostor");
+    setIsGameRunning(false);
   };
 
   const selectImpostor = (agentId: number) => {
     setSelectedImpostor(agentId);
-    const updatedAgents = agents.map((agent) => ({
-      ...agent,
-      isImpostor: agent.id === agentId,
-    }));
-    setAgents(updatedAgents);
+    setAgents((prevAgents) =>
+      prevAgents.map((agent) => ({
+        ...agent,
+        isImpostor: agent.id === agentId,
+      }))
+    );
   };
 
   const startAmongUsGame = () => {
@@ -238,95 +316,130 @@ const AmongUsGame: React.FC = () => {
 
     setError(null);
     setGameState("playing");
-    setGameLog([
-      {
-        type: "system",
-        message: `Game started! ${
-          agents.find((a) => a.id === selectedImpostor)?.name
-        } is the secret impostor.`,
-        timestamp: new Date().toLocaleTimeString(),
-      },
-    ]);
+    setIsGameRunning(true);
+    gameRunningRef.current = true;
+
+    const impostorAgent = agents.find((a) => a.id === selectedImpostor);
+    addToLog(
+      "system",
+      `Game started! ${impostorAgent?.name} is the secret impostor.`
+    );
 
     // Start the game loop
     void runGameLoop();
   };
 
   const runGameLoop = async () => {
+    console.log("Starting game loop...");
     const maxRounds = 8;
 
-    for (let currentRound = 1; currentRound <= maxRounds; currentRound++) {
-      if (gameState !== "playing") break;
-
-      setRound(currentRound);
-      setGameProgress((currentRound / maxRounds) * 100);
-
-      // Add round start message
-      addToLog("system", `--- Round ${currentRound} ---`);
-
-      // Each agent makes a statement or observation
-      const aliveAgents = agents.filter((agent) => agent.alive);
-
-      for (let agent of aliveAgents) {
-        if (gameState !== "playing") break;
-
-        let prompt: string;
-        if (agent.isImpostor) {
-          prompt = `You are the impostor in Among Us. You need to blend in and deflect suspicion while subtly casting doubt on others. The game is in round ${currentRound}. Make a statement that sounds innocent but might redirect suspicion.`;
-        } else {
-          prompt = `You are a crew member in Among Us trying to identify the impostor. It's round ${currentRound}. Share your observations or suspicions about other players' behavior.`;
+    try {
+      for (let currentRound = 1; currentRound <= maxRounds; currentRound++) {
+        // Check if game should continue using ref instead of state
+        if (!gameRunningRef.current) {
+          console.log("Game stopped by user or error");
+          break;
         }
 
-        try {
-          if (!agent.agent) throw new Error("Agent not initialized");
-          const response = await agent.agent.simpleChat(prompt);
-          addToLog("agent", response, agent);
+        console.log(`Starting round ${currentRound}`);
+        setRound(currentRound);
+        setGameProgress((currentRound / maxRounds) * 100);
 
-          // Update suspicion levels based on responses
-          updateSuspicionLevels(agent, response);
+        addToLog("system", `--- Round ${currentRound} ---`);
 
-          // Small delay for readability
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-        } catch (error) {
-          console.error("Agent response error:", error);
-          addToLog(
-            "agent",
-            "I'm not sure what to think about all this...",
-            agent
+        // Get current alive agents
+        const currentAgents = agents.filter((agent) => agent.alive);
+        console.log(
+          `Alive agents in round ${currentRound}:`,
+          currentAgents.map((a) => a.name)
+        );
+
+        // Each agent makes a statement or observation
+        for (let i = 0; i < currentAgents.length; i++) {
+          const agent = currentAgents[i];
+
+          if (!gameRunningRef.current) {
+            console.log("Game stopped during agent statements");
+            return;
+          }
+
+          let prompt: string;
+          if (agent.isImpostor) {
+            prompt = `You are the impostor in Among Us. You need to blend in and deflect suspicion while subtly casting doubt on others. The game is in round ${currentRound}. Make a statement that sounds innocent but might redirect suspicion. Keep it brief (1-2 sentences).`;
+          } else {
+            prompt = `You are a crew member in Among Us trying to identify the impostor. It's round ${currentRound}. Share your observations or suspicions about other players' behavior. Keep it brief (1-2 sentences).`;
+          }
+
+          try {
+            console.log(`Getting response from ${agent.name}...`);
+            if (!agent.agent) {
+              throw new Error("Agent not initialized");
+            }
+
+            const response = await agent.agent.simpleChat(prompt);
+            console.log(
+              `${agent.name} responded: ${response.substring(0, 100)}...`
+            );
+
+            addToLog("agent", response, agent);
+            updateSuspicionLevels(agent, response);
+
+            // Delay for readability
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          } catch (error) {
+            console.error(`Agent ${agent.name} response error:`, error);
+            addToLog(
+              "agent",
+              "I'm not sure what to think about all this...",
+              agent
+            );
+          }
+        }
+
+        // Voting phase every 3 rounds
+        if (currentRound % 3 === 0) {
+          console.log("Conducting voting...");
+          await conductVoting();
+
+          // Check win conditions with updated agents state
+          const aliveCrewmates = agents.filter(
+            (a) => a.alive && !a.isImpostor
+          ).length;
+          const aliveImpostors = agents.filter(
+            (a) => a.alive && a.isImpostor
+          ).length;
+
+          console.log(
+            `Alive crewmates: ${aliveCrewmates}, Alive impostors: ${aliveImpostors}`
           );
+
+          if (aliveImpostors === 0) {
+            await endGame(true, "Crew wins! The impostor has been eliminated!");
+            return;
+          } else if (aliveImpostors >= aliveCrewmates) {
+            await endGame(
+              false,
+              "Impostor wins! They've eliminated enough crew members!"
+            );
+            return;
+          }
         }
+
+        // Small delay between rounds
+        await new Promise((resolve) => setTimeout(resolve, 3000));
       }
 
-      // Voting phase every few rounds
-      if (currentRound % 3 === 0) {
-        await conductVoting();
-
-        // Check win conditions
-        const aliveCrewmates = agents.filter(
-          (a) => a.alive && !a.isImpostor
-        ).length;
-        const aliveImpostors = agents.filter(
-          (a) => a.alive && a.isImpostor
-        ).length;
-
-        if (aliveImpostors === 0) {
-          await endGame(true, "Crew wins! The impostor has been eliminated!");
-          return;
-        } else if (aliveImpostors >= aliveCrewmates) {
-          await endGame(
-            false,
-            "Impostor wins! They've eliminated enough crew members!"
-          );
-          return;
-        }
-      }
-
-      // Small delay between rounds
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // If we reach here, impostor wins by surviving
+      await endGame(false, "Impostor wins by surviving all rounds!");
+    } catch (error) {
+      console.error("Game loop error:", error);
+      setError(
+        "Game encountered an error: " +
+          (error instanceof Error ? error.message : "Unknown error")
+      );
+      gameRunningRef.current = false;
+      setIsGameRunning(false);
     }
-
-    // If we reach here, impostor wins by surviving
-    await endGame(false, "Impostor wins by surviving all rounds!");
   };
 
   const updateSuspicionLevels = (speakingAgent: Agent, message: string) => {
@@ -337,11 +450,16 @@ const AmongUsGame: React.FC = () => {
         let suspicionChange = 0;
 
         // If the message mentions this agent or sounds accusatory
-        if (
-          message.toLowerCase().includes(agent.name.toLowerCase()) ||
+        const agentMentioned = message
+          .toLowerCase()
+          .includes(agent.name.toLowerCase());
+        const soundsSuspicious =
           message.toLowerCase().includes("suspicious") ||
-          message.toLowerCase().includes("acting weird")
-        ) {
+          message.toLowerCase().includes("acting weird") ||
+          message.toLowerCase().includes("strange") ||
+          message.toLowerCase().includes("doubt");
+
+        if (agentMentioned || soundsSuspicious) {
           suspicionChange += 0.1;
         }
 
@@ -380,16 +498,24 @@ const AmongUsGame: React.FC = () => {
 
     // Each agent votes
     for (let voter of aliveAgents) {
-      // Determine who this agent votes for based on suspicion levels
+      if (!gameRunningRef.current) return;
+
       const otherAgents = aliveAgents.filter((a) => a.id !== voter.id);
 
-      let target: Agent | undefined;
+      if (otherAgents.length === 0) continue;
+
+      let target: Agent;
+
       if (voter.isImpostor) {
         // Impostor tries to vote out crew members, preferably not the most suspicious
         const crewmates = otherAgents.filter((a) => !a.isImpostor);
-        target = crewmates.reduce((prev, current) =>
-          prev.suspicionLevel < current.suspicionLevel ? prev : current
-        );
+        if (crewmates.length > 0) {
+          target = crewmates.reduce((prev, current) =>
+            prev.suspicionLevel < current.suspicionLevel ? prev : current
+          );
+        } else {
+          target = otherAgents[0]; // Fallback
+        }
       } else {
         // Crew votes for most suspicious
         target = otherAgents.reduce((prev, current) =>
@@ -397,24 +523,30 @@ const AmongUsGame: React.FC = () => {
         );
       }
 
-      if (target) {
-        votes[target.id]++;
-        addToLog("vote", `${voter.name} votes for ${target.name}`, voter);
-      }
+      votes[target.id]++;
+      addToLog("vote", `${voter.name} votes for ${target.name}`, voter);
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
 
     // Find who gets voted out
-    const votedOut = Object.keys(votes).reduce((a, b) =>
-      votes[Number(a)] > votes[Number(b)] ? a : b
-    );
-    const votedOutAgent = agents.find((a) => a.id === Number(votedOut));
+    const voteEntries = Object.entries(votes).filter(([_, count]) => count > 0);
 
-    if (votedOutAgent && votes[Number(votedOut)] > 0) {
+    if (voteEntries.length === 0) {
+      addToLog("system", "No one was voted out this round.");
+      return;
+    }
+
+    const [votedOutId, maxVotes] = voteEntries.reduce((max, current) =>
+      current[1] > max[1] ? current : max
+    );
+
+    const votedOutAgent = agents.find((a) => a.id === Number(votedOutId));
+
+    if (votedOutAgent && maxVotes > 0) {
       setAgents((prevAgents) =>
         prevAgents.map((agent) =>
-          agent.id === Number(votedOut) ? { ...agent, alive: false } : agent
+          agent.id === Number(votedOutId) ? { ...agent, alive: false } : agent
         )
       );
 
@@ -422,12 +554,13 @@ const AmongUsGame: React.FC = () => {
         ? " (THE IMPOSTOR!)"
         : " (innocent crew member)";
       addToLog("system", `${votedOutAgent.name} was voted out${wasImpostor}`);
-    } else {
-      addToLog("system", "No one was voted out this round.");
     }
   };
 
   const endGame = async (playerWins: boolean, message: string) => {
+    console.log("Ending game:", message);
+    gameRunningRef.current = false;
+    setIsGameRunning(false);
     setGameState("finished");
     addToLog("system", `🎮 GAME OVER: ${message}`);
 
@@ -437,24 +570,29 @@ const AmongUsGame: React.FC = () => {
         const transferResult = await transferSTX({
           fromPrivateKey: process.env.NEXT_PUBLIC_GAME_PRIVATE_KEY || "",
           toAddress: userAddress,
+          fromAddress: gameAddress,
           amount: winnings.toString(),
           network: "testnet",
         });
-        if (!transferResult.success) {
+        if (transferResult.success) {
+          addToLog(
+            "transaction",
+            `Received ${winnings.toFixed(
+              3
+            )} STX in winnings from game address ${gameAddress} (TxID: ${
+              transferResult.txId
+            })`
+          );
+          setUserBalance((prev) => (prev !== null ? prev + winnings : prev));
+        } else {
           setError(transferResult.error || "Failed to transfer winnings");
-          return;
         }
-        addToLog(
-          "transaction",
-          `Received ${winnings.toFixed(
-            3
-          )} STX in winnings from game address ${gameAddress}`
-        );
-        setUserBalance((prev) => (prev !== null ? prev + winnings : prev));
       } catch (err) {
         console.error("Transfer winnings failed:", err);
-        setError("Failed to transfer winnings");
-        return;
+        setError(
+          "Failed to transfer winnings: " +
+            (err instanceof Error ? err.message : "Unknown error")
+        );
       }
     } else {
       addToLog("system", `💸 You lost your bet of ${betAmount} STX.`);
@@ -473,6 +611,8 @@ const AmongUsGame: React.FC = () => {
   };
 
   const resetGame = () => {
+    gameRunningRef.current = false;
+    setIsGameRunning(false);
     setGameState("setup");
     setAgents([]);
     setSelectedImpostor(null);
@@ -480,6 +620,12 @@ const AmongUsGame: React.FC = () => {
     setRound(0);
     setGameProgress(0);
     setError(null);
+  };
+
+  const stopGame = () => {
+    gameRunningRef.current = false;
+    setIsGameRunning(false);
+    addToLog("system", "Game stopped by user");
   };
 
   // Auto-scroll to bottom of game log
@@ -513,6 +659,11 @@ const AmongUsGame: React.FC = () => {
                 Round {round} • {gameProgress.toFixed(0)}% Complete
               </Badge>
             )}
+            {isGameRunning && (
+              <Button onClick={stopGame} variant="destructive" size="sm">
+                Stop Game
+              </Button>
+            )}
           </div>
           {error && <div className="mt-4 text-red-400 text-sm">{error}</div>}
         </div>
@@ -527,6 +678,7 @@ const AmongUsGame: React.FC = () => {
                   Game Setup
                 </CardTitle>
               </CardHeader>
+              
               <CardContent>
                 <div className="space-y-4">
                   <div>
@@ -594,11 +746,14 @@ const AmongUsGame: React.FC = () => {
                       !userPrivateKey ||
                       betAmount < 0.1 ||
                       userBalance === null ||
-                      betAmount > userBalance
+                      betAmount > userBalance ||
+                      isGameRunning
                     }
                   >
                     <Play className="w-4 h-4 mr-2" />
-                    Transfer Bet & Start Game
+                    {isGameRunning
+                      ? "Starting Game..."
+                      : "Transfer Bet & Start Game"}
                   </Button>
                 </div>
               </CardContent>
@@ -661,9 +816,9 @@ const AmongUsGame: React.FC = () => {
               <Button
                 onClick={startAmongUsGame}
                 className="w-full bg-red-600 hover:bg-red-700"
-                disabled={selectedImpostor === null}
+                disabled={selectedImpostor === null || isGameRunning}
               >
-                Start Among Us Game
+                {isGameRunning ? "Starting Game..." : "Start Among Us Game"}
               </Button>
             </CardContent>
           </Card>
